@@ -1,6 +1,5 @@
 package net.kenevans.polar.polarppg;
 
-import android.graphics.Color;
 import android.util.Log;
 
 import com.androidplot.xy.BoundaryMode;
@@ -13,18 +12,19 @@ import com.polar.sdk.api.model.PolarOhrData;
 
 @SuppressWarnings("WeakerAccess")
 public class Plotter implements IConstants {
+    public static final int AVERAGE_SIZE = 50;
 
     private net.kenevans.polar.polarppg.PlotterListener mListener;
     private final XYSeriesFormatter<XYRegionFormatter> mFormatter;
-//    private final XYSeriesFormatter<XYRegionFormatter> mFormatter1;
+    //    private final XYSeriesFormatter<XYRegionFormatter> mFormatter1;
 //    private final XYSeriesFormatter<XYRegionFormatter> mFormatter2;
 //    private final XYSeriesFormatter<XYRegionFormatter> mFormatter3;
     private final SimpleXYSeries mSeries;
-//    private final SimpleXYSeries mSeries1;
+    //    private final SimpleXYSeries mSeries1;
 //    private final SimpleXYSeries mSeries2;
 //    private final SimpleXYSeries mSeries3;
     private int mPrev = Integer.MAX_VALUE;
-
+    private RunningAverage mAverage;
 
     /**
      * The next index in the data
@@ -46,6 +46,7 @@ public class Plotter implements IConstants {
         this.mDataSize = dataSize;
         this.mTotalDataSize = totalDataSize;
         this.mDataIndex = 0;
+        this.mAverage = new RunningAverage(AVERAGE_SIZE);
 
         mFormatter = new LineAndPointFormatter(lineColor,
                 showVertices ? lineColor : null, null, null);
@@ -105,6 +106,53 @@ public class Plotter implements IConstants {
      * @param polarOhrData The data that came in.
      */
     public void addValues(XYPlot plot, PolarOhrData polarOhrData) {
+//        Log.d(TAG,
+//                "addValues: dataIndex=" + dataIndex + " seriesSize=" +
+//                series.size());
+        int nSamples = polarOhrData.samples.size();
+        if (nSamples == 0) return;
+
+        // Convert to a scale that is similar to mV for ECG
+        double scale = .0001;
+
+        // Add the new values, removing old values if needed
+        int dval;
+        double val;
+        for (PolarOhrData.PolarOhrSample data : polarOhrData.samples) {
+            if (mSeries.size() >= mTotalDataSize) {
+                mSeries.removeFirst();
+            }
+            mDataIndex++;
+
+            // The data value
+            dval = data.channelSamples.get(0)
+                    + data.channelSamples.get(1)
+                    + data.channelSamples.get(2)
+                    - 3 * data.channelSamples.get(3);
+            mAverage.add(dval);
+            val = dval - mAverage.average();
+            mSeries.addLast(mDataIndex, scale * val);
+//            Log.d(TAG, "dval=" + dval + " average=" +  " val=" + val);
+//            Log.d(TAG, "size: " + mSeries.size() + " val: " + val
+//                    + " ppg0: " + data
+//                    .channelSamples.get(0)
+//                    + " ppg1: " + data
+//                    .channelSamples.get(1)
+//                    + " ppg2: " + data
+//                    .channelSamples.get(2)
+//                    + " ambient: " + data
+//                    .channelSamples.get(3));
+            updatePlot(plot);
+        }
+    }
+
+    /**
+     * Implements a strip chart adding new data at the end.
+     *
+     * @param plot         The associated XYPlot.
+     * @param polarOhrData The data that came in.
+     */
+    public void addValues1(XYPlot plot, PolarOhrData polarOhrData) {
 //        Log.d(TAG,
 //                "addValues: dataIndex=" + dataIndex + " seriesSize=" +
 //                series.size());
@@ -188,6 +236,7 @@ public class Plotter implements IConstants {
      * Clear the plot and reset dataIndex;
      */
     public void clear() {
+        mAverage = new RunningAverage(AVERAGE_SIZE);
         mPrev = Integer.MAX_VALUE;
         mDataIndex = 0;
         mSeries.clear();

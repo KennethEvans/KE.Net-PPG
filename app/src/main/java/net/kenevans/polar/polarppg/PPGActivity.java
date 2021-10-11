@@ -1026,18 +1026,18 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 if (u.equals(UUID.fromString("00002a28-0000-1000-8000" +
                         "-00805f9b34fb"))) {
                     mFirmware = s1.trim();
-                    String msg = "Firmware: " + mFirmware;
                     Log.d(TAG, "*Firmware: " + s + " " + mFirmware);
-                    mTextViewFW.append(msg + "\n");
+                    mTextViewFW.setText(getString(R.string.info_string,
+                            mName, mBatteryLevel, mFirmware, mDeviceId));
                 }
             }
 
             @Override
             public void batteryLevelReceived(@NonNull String s, int i) {
                 mBatteryLevel = Integer.toString(i);
-                String msg = "ID: " + s + "\nBattery level: " + i;
                 Log.d(TAG, "*Battery level " + s + " " + i);
-                mTextViewFW.append(msg + "\n");
+                mTextViewFW.setText(getString(R.string.info_string,
+                        mName, mBatteryLevel, mFirmware, mDeviceId));
             }
 
             @Override
