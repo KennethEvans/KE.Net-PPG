@@ -8,8 +8,6 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
 
-import net.kenevans.polar.polarppg.R;
-
 import java.util.LinkedList;
 
 /*
@@ -37,7 +35,8 @@ class PpgImage {
     private static final float OUTLINE_WIDTH = 5f;
     private static final float CURVE_WIDTH = 3f;
 
-    static Bitmap createImage(Context context, String date, String id,
+    static Bitmap createImage(Context context, int samplingRate, String date,
+                              String id,
                               String firmware,
                               String batteryLevel,
                               String notes, String hr, String duration,
@@ -48,7 +47,8 @@ class PpgImage {
         Paint paint = new Paint();
         Typeface font = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL);
         Typeface fontBold = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD);
-        Typeface fontInfo = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL);
+        Typeface fontInfo = Typeface.create(Typeface.SANS_SERIF,
+                Typeface.NORMAL);
         Typeface fontLogo = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD);
 
         paint.setColor(Color.BLACK);
@@ -166,7 +166,7 @@ class PpgImage {
         float x0 = 0, x;
         float offsetX = GRAPH_X;
         float offsetY = GRAPH_Y + 30;
-        float valueStep = 1.f / (130.f * .04f);
+        float valueStep = 200.f / (samplingRate * 8);
         for (Number val : vals) {
             x = index * valueStep;
             y = -10.f * val.floatValue();
@@ -175,16 +175,16 @@ class PpgImage {
                 y0 = y;
                 index++;
                 continue;
-            } else if (index == 1040) {
-                offsetX -= 1040 * valueStep;
+            } else if (index == 8 * samplingRate) {
+                offsetX -= (8 * samplingRate) * valueStep;
                 offsetY += 60;
-            } else if (index == 2080) {
-                offsetX -= 1040 * valueStep;
+            } else if (index == 16 * samplingRate) {
+                offsetX -= (8 * samplingRate) * valueStep;
                 offsetY += 60;
-            } else if (index == 3120) {
-                offsetX -= 1040 * valueStep;
+            } else if (index == 24 * samplingRate) {
+                offsetX -= (8 * samplingRate) * valueStep;
                 offsetY += 60;
-            } else if (index > 4160) {
+            } else if (index > 32 * samplingRate) {
                 // Handle writing to the next page
                 break;
             }

@@ -79,13 +79,19 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
     SharedPreferences mSharedPreferences;
     private static final int MAX_DEVICES = 3;
     List<DeviceInfo> mMruDevices;
-    // The total number of points = 26 * total large blocks desired
-    private static final int N_TOTAL_POINTS = 3900;  // 150 = 30 sec
-    private static final int N_PLOT_POINTS = 520;    // 20 points
+    // The defaults are for 130 Hz
+    private int mSamplingRate = 130;
+    private int mNLarge = 26;
+    // The total number of points = nLarge * total large blocks desired
+    private int mNTotalPoints = 150 * mNLarge;  // 150 = 30 sec
+    private int mNPlotPoints = 20 * mNLarge;    // 20 points
     private XYPlot mPlot;
-    private net.kenevans.polar.polarppg.Plotter mPlotter;
+    private Plotter mPlotter;
     private PlotListener mPlotListener;
     private boolean mOrientationChanged = false;
+
+    // For debugging
+    private double mTemp;
 
     /***
      * Whether to save as CSV, Plot, or both.
@@ -137,10 +143,6 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         mMruDevices = gson.fromJson(json, type);
         if (mMruDevices == null) {
             mMruDevices = new ArrayList<>();
-            // TODO Eliminate this
-            mMruDevices.add(new DeviceInfo("Polar Verity Sense 9F026A2E",
-                    "9F026A2E"));
-            mMruDevices.add(new DeviceInfo("Polar OH1 538A5F28", "538A5F28"));
         }
 
         if (mDeviceId == null || mDeviceId.equals("")) {
@@ -170,7 +172,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         if (mPlotter == null) {
             mPlot.post(() -> {
                 mPlotter =
-                        new Plotter(N_TOTAL_POINTS, N_PLOT_POINTS,
+                        new Plotter(mNTotalPoints, mNPlotPoints,
                                 "PPG", Color.RED, false);
                 mPlotter.setmListener(PPGActivity.this);
                 setupPlot();
@@ -319,8 +321,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 this.getContentResolver().takePersistableUriPermission(treeUri,
                         takeFlags);
             } else {
-                net.kenevans.polar.polarppg.Utils.errMsg(this, "Failed to get" +
-                        " persistent access " +
+                Utils.errMsg(this, "Failed to get persistent access " +
                         "permissions");
             }
         }
@@ -567,12 +568,12 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
 //                " height=" + (gridRect.bottom - gridRect.top));
 
         // Calculate the range limits to make the blocks be square
-        // Using .5 mV and N_PLOT_POINTS / 130 Hz for total grid size
+        // Using .5 mV and nLarge / samplingRate for total grid size
         // rMax is half the total, rMax at top and -rMax at bottom
         RectF gridRect = mPlot.getGraph().getGridRect();
         double rMax =
-                .25 * (gridRect.bottom - gridRect.top) * N_PLOT_POINTS /
-                        26 / (gridRect.right - gridRect.left);
+                .25 * (gridRect.bottom - gridRect.top) * mNPlotPoints /
+                        mNLarge / (gridRect.right - gridRect.left);
         // Round it to one decimal point
         rMax = Math.round(rMax * 10) / 10.;
         Log.d(TAG, "    rMax = " + rMax);
@@ -593,10 +594,11 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         // Set the range block to be .1 mV so a large block will be .5 mV
         mPlot.setRangeStep(StepMode.INCREMENT_BY_VAL, .1);
         mPlot.setLinesPerRangeLabel(5);
-        mPlot.setDomainBoundaries(0, N_PLOT_POINTS, BoundaryMode.FIXED);
-        // Set the domain block to be .2 * 26 so large block will be 26 samples
+        mPlot.setDomainBoundaries(0, mNPlotPoints, BoundaryMode.FIXED);
+        // Set the domain block to be .2 * nlarge so large block will be
+        // nLarge samples
         mPlot.setDomainStep(StepMode.INCREMENT_BY_VAL,
-                .2 * 26);
+                .2 * mNLarge);
         mPlot.setLinesPerDomainLabel(5);
 
         mPlot.getGraph().setLineLabelEdges(XYGraphWidget.Edge.NONE);
@@ -615,9 +617,24 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         update();
     }
 
+    public void resetPlot(int samplingRate) {
+        mSamplingRate = samplingRate;
+        mNLarge = (int) Math.round(.2 * samplingRate);
+        mNTotalPoints = 150 * mNLarge;
+        mNPlotPoints = 20 * mNLarge;
+        mPlot.post(() -> {
+            mPlotter =
+                    new Plotter(mNTotalPoints, mNPlotPoints,
+                            "PPG", Color.RED, false);
+            mPlotter.setmListener(PPGActivity.this);
+            setupPlot();
+        });
+    }
+
     private void allowPan(boolean allow) {
         if (allow) {
-            PanZoom.attach(mPlot, PanZoom.Pan.HORIZONTAL, PanZoom.Zoom.NONE);
+            PanZoom.attach(mPlot, PanZoom.Pan.HORIZONTAL,
+                    PanZoom.Zoom.NONE);
         } else {
             PanZoom.attach(mPlot, PanZoom.Pan.NONE, PanZoom.Zoom.NONE);
         }
@@ -635,7 +652,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         if (!Environment.MEDIA_MOUNTED.equals(state)) {
             msg = "External Storage is not available";
             Log.e(TAG, msg);
-            net.kenevans.polar.polarppg.Utils.errMsg(this, msg);
+            Utils.errMsg(this, msg);
             return;
         }
         // Get a note
@@ -680,7 +697,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         SharedPreferences prefs = getPreferences(MODE_PRIVATE);
         String treeUriStr = prefs.getString(PREF_TREE_URI, null);
         if (treeUriStr == null) {
-            net.kenevans.polar.polarppg.Utils.errMsg(this, "There is no data " +
+            Utils.errMsg(this, "There is no data " +
                     "directory set");
             return;
         }
@@ -697,7 +714,8 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                             treeDocumentId);
             ContentResolver resolver = this.getContentResolver();
             ParcelFileDescriptor pfd;
-            Uri docUri = DocumentsContract.createDocument(resolver, docTreeUri,
+            Uri docUri = DocumentsContract.createDocument(resolver,
+                    docTreeUri,
                     "image/png", fileName);
             pfd = getContentResolver().
                     openFileDescriptor(docUri, "w");
@@ -707,6 +725,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                         mPlotter.getmSeries().getyVals();
                 final int nSamples = vals.size();
                 Bitmap bm = PpgImage.createImage(this,
+                        mSamplingRate,
                         mStopTime.toString(),
                         mDeviceId,
                         mFirmware,
@@ -714,19 +733,19 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                         note,
                         mStopHR,
                         String.format(Locale.US, "%.1f " +
-                                "sec", nSamples / 130.),
+                                "sec", nSamples / (double) mSamplingRate),
                         vals);
                 bm.compress(Bitmap.CompressFormat.PNG, 80, strm);
                 strm.close();
                 msg = "Wrote " + docUri.getLastPathSegment();
                 Log.d(TAG, msg);
-                net.kenevans.polar.polarppg.Utils.infoMsg(this, msg);
+                Utils.infoMsg(this, msg);
             }
         } catch (IOException ex) {
             msg = "Error saving plot";
             Log.e(TAG, msg);
             Log.e(TAG, Log.getStackTraceString(ex));
-            net.kenevans.polar.polarppg.Utils.excMsg(this, msg, ex);
+            Utils.excMsg(this, msg, ex);
         }
     }
 
@@ -739,8 +758,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         SharedPreferences prefs = getPreferences(MODE_PRIVATE);
         String treeUriStr = prefs.getString(PREF_TREE_URI, null);
         if (treeUriStr == null) {
-            net.kenevans.polar.polarppg.Utils.errMsg(this, "There is no data " +
-                    "directory set");
+            Utils.errMsg(this, "There is no data directory set");
             return;
         }
         String msg;
@@ -756,11 +774,13 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                             treeDocumentId);
             ContentResolver resolver = this.getContentResolver();
             ParcelFileDescriptor pfd;
-            Uri docUri = DocumentsContract.createDocument(resolver, docTreeUri,
+            Uri docUri = DocumentsContract.createDocument(resolver,
+                    docTreeUri,
                     "text/csv", fileName);
             pfd = getContentResolver().
                     openFileDescriptor(docUri, "w");
-            try (FileWriter writer = new FileWriter(pfd.getFileDescriptor());
+            try (FileWriter writer =
+                         new FileWriter(pfd.getFileDescriptor());
                  PrintWriter out = new PrintWriter((writer))) {
                 // Write header
                 out.write(mStopTime.toString() + "\n");
@@ -771,9 +791,10 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 // Write samples
                 LinkedList<Number> vals = mPlotter.getmSeries().getyVals();
                 int nSamples = vals.size();
-                out.write(nSamples + " values " + String.format(Locale.US, "%" +
-                        ".1f " +
-                        "sec\n", nSamples / 130.));
+                out.write(nSamples + " values " + String.format(Locale.US
+                        , "%" +
+                                ".1f " +
+                                "sec\n", nSamples / (double) mSamplingRate));
                 for (Number val : vals) {
                     out.write(String.format(Locale.US, "%.3f\n",
                             val.doubleValue()));
@@ -781,13 +802,13 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 out.flush();
                 msg = "Wrote " + docUri.getLastPathSegment();
                 Log.d(TAG, msg);
-                net.kenevans.polar.polarppg.Utils.infoMsg(this, msg);
+                Utils.infoMsg(this, msg);
             }
         } catch (IOException ex) {
             msg = "Error writing CSV file";
             Log.e(TAG, msg);
             Log.e(TAG, Log.getStackTraceString(ex));
-            net.kenevans.polar.polarppg.Utils.excMsg(this, msg, ex);
+            Utils.excMsg(this, msg, ex);
         }
     }
 
@@ -805,7 +826,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         if (mPlotter != null && mPlotter.getmSeries() !=
                 null && mPlotter.getmSeries().getyVals() != null) {
             double elapsed =
-                    mPlotter.getmDataIndex() / 130.;
+                    mPlotter.getmDataIndex() / (double) mSamplingRate;
             msg.append("Elapsed Time: ")
                     .append(getString(R.string.elapsed_time, elapsed)).append("\n");
             msg.append("Points plotted: ")
@@ -826,7 +847,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
             Uri treeUri = Uri.parse(treeUriStr);
             msg.append("Data Directory: ").append(treeUri.getPath());
         }
-        net.kenevans.polar.polarppg.Utils.infoMsg(this, msg.toString());
+        Utils.infoMsg(this, msg.toString());
     }
 
     /**
@@ -836,6 +857,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         Log.v(TAG, this.getClass().getSimpleName() + " streamPPG:"
                 + " mPpgDisposable=" + mPpgDisposable);
         if (mPpgDisposable == null) {
+            mTemp = 0;
             mPpgDisposable = mApi.requestStreamSettings(mDeviceId,
                     PolarBleApi.DeviceStreamingFeature.PPG)
                     .toFlowable()
@@ -854,11 +876,11 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                                     PolarOhrData polarOhrPPGData =
                                             (PolarOhrData) obj;
                                     if (polarOhrPPGData.type == PolarOhrData.OHR_DATA_TYPE.PPG3_AMBIENT1) {
-//                                        Log.d(TAG,
-//                                                "Received " +
-//                                                polarOhrPPGData.samples
-//                                                .size() + " PPG samples");
-//                                        for (PolarOhrData.PolarOhrSample
+//                                        Log.d(TAG, "timestamp=" +
+//                                        polarOhrPPGData.timeStamp
+//                                        + " samples=" + polarOhrPPGData
+//                                        .samples.size());
+////                                        for (PolarOhrData.PolarOhrSample
 //                                        data : polarOhrPPGData.samples) {
 //                                            Log.d(TAG, ""
 //                                                    + " ppg0: " + data
@@ -870,11 +892,22 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
 //                                                    + " ambient: " + data
 //                                                    .channelSamples.get(3));
 //                                        }
+//                                        // Check sampling rate
+//                                        if (mTemp != 0) {
+//                                            try {
+//                                                Log.d(TAG, "Hz="
+//                                                        + 1.e9 * polarOhrPPGData.samples.size()
+//                                                        / (polarOhrPPGData.timeStamp - mTemp));
+//                                            } catch (Exception ex) {
+//                                                // Do nothing
+//                                            }
+//                                        }
+//                                        mTemp = polarOhrPPGData.timeStamp;
                                         if (mPlaying) {
                                             mPlotter.addValues(mPlot,
                                                     polarOhrPPGData);
                                             double elapsed =
-                                                    mPlotter.getmDataIndex() / 130.;
+                                                    mPlotter.getmDataIndex() / (double) mSamplingRate;
                                             PPGActivity.this.runOnUiThread(() ->
                                                     mTextViewTime.setText(getString(R.string.elapsed_time, elapsed)));
                                         }
@@ -963,7 +996,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
 //                                        polarEcgData);
 //                                        double elapsed =
 //                                                mPlotter.getmDataIndex() /
-//                                                130.;
+//                                                (double)mSamplingRate;
 //                                        mTextViewTime.setText(getString(R
 //                                        .string.elapsed_time, elapsed));
 //                                    }
@@ -1095,6 +1128,16 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 mName = s.name;
                 // Set the MRU preference here after we know the name
                 setDeviceMruPref(new DeviceInfo(mName, mDeviceId));
+                // Reset the plot
+                if (mName.contains("Sense")) {
+                    resetPlot(55);
+                } else if (mName.contains("OH1")) {
+                    // 135 Hz
+                    resetPlot(135);
+                } else {
+                    // 130 Hz
+                    resetPlot(130);
+                }
                 Toast.makeText(PPGActivity.this, R.string.connected,
                         Toast.LENGTH_SHORT).show();
             }
@@ -1107,8 +1150,10 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
             @Override
             public void streamingFeaturesReady(@NonNull final String identifier,
                                                @NonNull final Set<PolarBleApi.DeviceStreamingFeature> features) {
-                for (PolarBleApi.DeviceStreamingFeature feature : features) {
-                    Log.d(TAG, "Streaming feature is ready for 1: " + feature);
+                for (PolarBleApi.DeviceStreamingFeature feature :
+                        features) {
+                    Log.d(TAG,
+                            "Streaming feature is ready for 1: " + feature);
                     switch (feature) {
                         case PPG:
                             streamPPG();
@@ -1168,7 +1213,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
             mStopTime = new Date();
         } catch (PolarInvalidArgument ex) {
             String msg = "connectToDevice: Bad argument: mDeviceId" + mDeviceId;
-            net.kenevans.polar.polarppg.Utils.excMsg(this, msg, ex);
+            Utils.excMsg(this, msg, ex);
             Log.d(TAG, "    restart: " + msg);
             mPlaying = false;
             mStopHR = mTextViewHR.getText().toString();
