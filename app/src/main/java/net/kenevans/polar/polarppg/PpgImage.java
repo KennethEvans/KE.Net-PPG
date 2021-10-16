@@ -47,8 +47,7 @@ class PpgImage {
         Paint paint = new Paint();
         Typeface font = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL);
         Typeface fontBold = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD);
-        Typeface fontInfo = Typeface.create(Typeface.SANS_SERIF,
-                Typeface.NORMAL);
+        Typeface fontInfo = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL);
         Typeface fontLogo = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD);
 
         paint.setColor(Color.BLACK);

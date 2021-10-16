@@ -22,6 +22,11 @@
         app:showAsAction="never"
         />
     <item
+        android:id="@+id/renormalize"
+        android:title="@string/renormalize_item"
+        app:showAsAction="never"
+        />
+    <item
         android:id="@+id/info"
         android:title="@string/info_item"
         app:showAsAction="never"

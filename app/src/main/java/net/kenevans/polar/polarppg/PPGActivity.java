@@ -57,6 +57,7 @@ import java.io.PrintWriter;
 import java.lang.reflect.Type;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
@@ -77,6 +78,7 @@ import io.reactivex.rxjava3.functions.Function;
 public class PPGActivity extends AppCompatActivity implements net.kenevans.polar.polarppg.IConstants,
         net.kenevans.polar.polarppg.PlotterListener {
     SharedPreferences mSharedPreferences;
+    private static final double RENORMALIZE_FRACTION = .80;
     private static final int MAX_DEVICES = 3;
     List<DeviceInfo> mMruDevices;
     // The defaults are for 130 Hz
@@ -89,6 +91,10 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
     private Plotter mPlotter;
     private PlotListener mPlotListener;
     private boolean mOrientationChanged = false;
+
+    private int mRequestedSamplingRate;
+    private int mNPacket;
+    private long mFirstTimestep;
 
     // For debugging
     private double mTemp;
@@ -239,10 +245,12 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 mStopTime = new Date();
                 mPlaying = false;
                 allowPan(true);
+                renormalize();
                 if (mPpgDisposable != null) {
                     // Turns it off
                     streamPPG();
                 }
+                renormalize();
                 mMenu.findItem(R.id.pause).setIcon(ResourcesCompat.
                         getDrawable(getResources(),
                                 R.drawable.ic_play_arrow_white_36dp, null));
@@ -250,6 +258,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 mMenu.findItem(R.id.save_data).setVisible(true);
                 mMenu.findItem(R.id.save_plot).setVisible(true);
                 mMenu.findItem(R.id.save_both).setVisible(true);
+                mMenu.findItem(R.id.renormalize).setVisible(true);
             } else {
                 // Turn it on
                 mStopHR = mTextViewHR.getText().toString();
@@ -271,6 +280,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 mMenu.findItem(R.id.save_data).setVisible(false);
                 mMenu.findItem(R.id.save_plot).setVisible(false);
                 mMenu.findItem(R.id.save_both).setVisible(false);
+                mMenu.findItem(R.id.renormalize).setVisible(false);
             }
             return true;
         } else if (id == R.id.save_plot) {
@@ -281,6 +291,9 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
             return true;
         } else if (id == R.id.save_both) {
             saveData(SAVE_TYPE.BOTH);
+            return true;
+        } else if (id == R.id.renormalize) {
+            renormalize();
             return true;
         } else if (id == R.id.info) {
             info();
@@ -304,7 +317,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
             // Get Uri from Storage Access Framework.
             treeUri = intent.getData();
             // Keep them from accumulating
-            net.kenevans.polar.polarppg.UriUtils.releaseAllPermissions(this);
+            UriUtils.releaseAllPermissions(this);
             SharedPreferences.Editor editor = getPreferences(MODE_PRIVATE)
                     .edit();
             if (treeUri != null) {
@@ -697,8 +710,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         SharedPreferences prefs = getPreferences(MODE_PRIVATE);
         String treeUriStr = prefs.getString(PREF_TREE_URI, null);
         if (treeUriStr == null) {
-            Utils.errMsg(this, "There is no data " +
-                    "directory set");
+            Utils.errMsg(this, "There is no data directory set");
             return;
         }
         String msg;
@@ -714,8 +726,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                             treeDocumentId);
             ContentResolver resolver = this.getContentResolver();
             ParcelFileDescriptor pfd;
-            Uri docUri = DocumentsContract.createDocument(resolver,
-                    docTreeUri,
+            Uri docUri = DocumentsContract.createDocument(resolver, docTreeUri,
                     "image/png", fileName);
             pfd = getContentResolver().
                     openFileDescriptor(docUri, "w");
@@ -779,8 +790,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                     "text/csv", fileName);
             pfd = getContentResolver().
                     openFileDescriptor(docUri, "w");
-            try (FileWriter writer =
-                         new FileWriter(pfd.getFileDescriptor());
+            try (FileWriter writer = new FileWriter(pfd.getFileDescriptor());
                  PrintWriter out = new PrintWriter((writer))) {
                 // Write header
                 out.write(mStopTime.toString() + "\n");
@@ -851,6 +861,43 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
     }
 
     /**
+     * Rescale the plot to a nominal size based on RENORMALIZE_FRACTION of
+     * the values.
+     */
+    public void renormalize() {
+        LinkedList<Number> vals = mPlotter.getmSeries().getyVals();
+        // Make a copy as vals will be cleared
+        @SuppressWarnings("unchecked")
+        LinkedList<Number> oldVals = (LinkedList<Number>) vals.clone();
+
+        int nSamples = vals.size();
+        if (nSamples < 10) {
+            Utils.warnMsg(this, "Too few samples to renormalize");
+            return;
+        }
+        List<Double> absVals = new ArrayList<>();
+        for (Number number : vals) {
+            absVals.add(Math.abs(number.doubleValue()));
+        }
+        Collections.sort(absVals);
+        int index = (int) Math.round(RENORMALIZE_FRACTION * nSamples);
+        double nominal = absVals.get(index);
+        if (nominal == 0) {
+            Utils.errMsg(this, "Error: Invalid scaling factor");
+            return;
+        }
+        mPlotter.getmSeries().clear();
+        for (int i = 0; i < nSamples; i++) {
+            Number val = oldVals.get(i);
+            mPlotter.getmSeries().addLast(i, 2. * val.doubleValue() / nominal);
+        }
+        update();
+        Toast.makeText(PPGActivity.this,
+                "Plot renormalized",
+                Toast.LENGTH_SHORT).show();
+    }
+
+    /**
      * Toggles streaming for PPG.
      */
     public void streamPPG() {
@@ -858,15 +905,73 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 + " mPpgDisposable=" + mPpgDisposable);
         if (mPpgDisposable == null) {
             mTemp = 0;
+            mNPacket = 0;
+            mFirstTimestep = 0;
+            mRequestedSamplingRate = -1;
+            //            // Get the requested sampling rate
+//            mApi.requestStreamSettings(mDeviceId,
+//                    PolarBleApi.DeviceStreamingFeature.PPG)
+//                    .toFlowable()
+//                    .flatMap((Function<PolarSensorSetting,
+//                            Publisher<PolarOhrData>>) polarPPGSettings -> {
+//                        Map<PolarSensorSetting.SettingType, Set<Integer>>
+//                        settings =
+//                                polarPPGSettings.maxSettings().settings;
+//                        Map<PolarSensorSetting.SettingType, Set<Integer>>
+//                        settings1 =
+//                                polarPPGSettings.maxSettings().settings;
+//                        Log.d(TAG, "settings=" + settings);
+//                        for (PolarSensorSetting.SettingType key :
+//                                settings.keySet()) {
+//                            Log.d(TAG,
+//                                    "Settings key=" + key + ": " + settings
+//                                    .get(key));
+//                        }
+//                        return null;
             mPpgDisposable = mApi.requestStreamSettings(mDeviceId,
                     PolarBleApi.DeviceStreamingFeature.PPG)
                     .toFlowable()
                     .flatMap((Function<PolarSensorSetting,
-                            Publisher<PolarOhrData>>) polarPPGSettings ->
-                            mApi.startOhrStreaming(mDeviceId,
-                                    polarPPGSettings.maxSettings()))
+                            Publisher<PolarOhrData>>) polarPPGSettings -> {
+                        // Get the requested sampling rate
+                        try {
+//                            for (PolarSensorSetting.SettingType key :
+//                                    polarPPGSettings.settings.keySet()) {
+//                                Log.d(TAG, "Settings key="
+//                                        + key + " [" + key.getClass() + "]");
+//                                Log.d(TAG, "value ="
+//                                        + polarPPGSettings.settings.get
+//                                        (key) + " ["
+//                                        + polarPPGSettings.settings.get
+//                                        (key).getClass()
+//                                        + "}");
+//                            }
+                            PolarSensorSetting.SettingType key =
+                                    PolarSensorSetting.SettingType.SAMPLE_RATE;
+//                            Log.d(TAG, "key=" + key);
+                            Set<Integer> sampleRatesSet =
+                                    polarPPGSettings.maxSettings().settings.get(key);
+//                            Log.d(TAG, "sampleRatesSet=" + sampleRatesSet);
+                            int nVals = sampleRatesSet.size();  // Should be 1
+//                            Log.d(TAG,
+//                                    "sampleRates.size()=" + nVals);
+//                            for (int val : sampleRatesSet) {
+//                                Log.d(TAG, "val=" + val);
+//                            }
+                            Integer[] sampleRates = new Integer[nVals];
+                            sampleRates = sampleRatesSet.toArray(sampleRates);
+                            mRequestedSamplingRate = sampleRates[0];
+                            Log.d(TAG,
+                                    "mRequestedSamplingRate=" + mRequestedSamplingRate);
+                        } catch (Exception ex) {
+                            Log.e(TAG, "Error getting mRequestedSamplingRate"
+                                    , ex);
+                        }
+                        return mApi.startOhrStreaming(mDeviceId,
+                                polarPPGSettings.maxSettings());
+                    })
                     .subscribe((Consumer<Object>) obj -> {
-//                                Log.d(TAG, "obj is " + obj.getClass());
+//                                Log.d(TAG, "obj is " + obj., getClass());
 //                                Log.d(TAG,
 //                                        "Thread " + Thread.currentThread()
 //                                        .getName()
@@ -876,6 +981,29 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                                     PolarOhrData polarOhrPPGData =
                                             (PolarOhrData) obj;
                                     if (polarOhrPPGData.type == PolarOhrData.OHR_DATA_TYPE.PPG3_AMBIENT1) {
+                                        mNPacket++;
+                                        if (mNPacket == 1) {
+                                            mFirstTimestep =
+                                                    polarOhrPPGData.timeStamp;
+                                            return;
+                                        }
+                                        if (mNPacket == 2) {
+                                            int samplingRate =
+                                                    (int) Math.round(1.e9 *
+                                                            polarOhrPPGData.samples.size()
+                                                            / (polarOhrPPGData.timeStamp - mFirstTimestep));
+                                            String msg =
+                                                    getString(R.string.sampling_rate_string, mRequestedSamplingRate, samplingRate);
+                                            Log.d(TAG, msg);
+                                            if (samplingRate != mRequestedSamplingRate) {
+                                                resetPlot(samplingRate);
+                                                PPGActivity.this.runOnUiThread(() ->
+                                                        Toast.makeText(PPGActivity.this,
+                                                                msg,
+                                                                Toast.LENGTH_SHORT).show());
+                                            }
+                                            return;
+                                        }
 //                                        Log.d(TAG, "timestamp=" +
 //                                        polarOhrPPGData.timeStamp
 //                                        + " samples=" + polarOhrPPGData
@@ -896,8 +1024,11 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
 //                                        if (mTemp != 0) {
 //                                            try {
 //                                                Log.d(TAG, "Hz="
-//                                                        + 1.e9 * polarOhrPPGData.samples.size()
-//                                                        / (polarOhrPPGData.timeStamp - mTemp));
+//                                                        + 1.e9 *
+//                                                        polarOhrPPGData
+//                                                        .samples.size()
+//                                                        / (polarOhrPPGData
+//                                                        .timeStamp - mTemp));
 //                                            } catch (Exception ex) {
 //                                                // Do nothing
 //                                            }
@@ -925,104 +1056,43 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         }
     }
 
-//    /**
-//     * Toggles streaming for ECG.
-//     */
-//    public void streamECG() {
-//        Log.v(TAG, this.getClass().getSimpleName() + " streamECG:"
-//                + "mPpgDisposable=" + mPpgDisposable);
-//        if (mPpgDisposable == null) {
-//            mPpgDisposable =
-//                    mApi.requestStreamSettings(mDeviceId,
-//                            PolarBleApi.DeviceStreamingFeature.ECG).
-//                            toFlowable().
-//                            flatMap(new Function<PolarSensorSetting,
-//                                    Publisher<PolarEcgData>>() {
-//                                @Override
-//                                public Publisher<PolarEcgData> apply
-//                                (@NonNull PolarSensorSetting sensorSetting) {
-////                            Log.d(TAG, "mPpgDisposable requestEcgSettings
-// " +
-////                                    "apply");
-////                            Log.d(TAG,
-////                                    "sampleRate=" + sensorSetting
-////                                    .maxSettings().settings.
-////                                            get(PolarSensorSetting
-////                                            .SettingType.SAMPLE_RATE) +
-////                                            " resolution=" + sensorSetting
-////                                            .maxSettings().settings.
-////                                            get(PolarSensorSetting
-////                                            .SettingType.RESOLUTION) +
-////                                            " range=" + sensorSetting
-////                                            .maxSettings().settings.
-////                                            get(PolarSensorSetting
-////                                            .SettingType.RANGE));
-//                                    return mApi.startEcgStreaming(mDeviceId,
-//                                            sensorSetting.maxSettings());
-//                                }
-//                            }).observeOn(AndroidSchedulers.mainThread())
-//                            .subscribe(
-//                            new Consumer<PolarEcgData>() {
-//                                @Override
-//                                public void accept(PolarEcgData
-//                                polarEcgData) {
-////                                    double deltaT =
-////                                            .000000001 * (polarEcgData
-////                                            .timeStamp - ecgTime0);
-////                                    ecgTime0 = polarEcgData.timeStamp;
-////                                    int nSamples = polarEcgData.samples
-////                                    .size();
-////                                    double samplesPerSec = nSamples /
-// deltaT;
-////                                    Log.d(TAG,
-////                                            "ecg update:" +
-////                                                    " deltaT=" + String
-////                                                    .format("%.3f",
-// deltaT) +
-////                                                    " nSamples=" +
-// nSamples +
-////                                                    " samplesPerSec=" +
-////                                                    String.format("%.3f",
-////                                                    samplesPerSec));
+//    private Flowable<PolarSensorSetting> requestStreamSettings(
+//            String identifier, PolarBleApi.DeviceStreamingFeature feature) {
 //
-////                                    long now = new Date().getTime();
-////                                    long ts =
-////                                            polarEcgData.timeStamp /
-// 1000000;
-////                                    Log.d(TAG, "timeOffset=" + (now - ts) +
-////                                            " " + new Date(now - ts));
-//                                    if (mPlaying) {
-//                                        mPlotter.addValues(mPlot,
-//                                        polarEcgData);
-//                                        double elapsed =
-//                                                mPlotter.getmDataIndex() /
-//                                                (double)mSamplingRate;
-//                                        mTextViewTime.setText(getString(R
-//                                        .string.elapsed_time, elapsed));
-//                                    }
-//                                }
-//                            },
-//                            new Consumer<Throwable>() {
-//                                @Override
-//                                public void accept(Throwable throwable) {
-//                                    Log.e(TAG,
-//                                            "" + throwable
-//                                            .getLocalizedMessage());
-//                                    mPpgDisposable = null;
-//                                }
-//                            },
-//                            new Action() {
-//                                @Override
-//                                public void run() {
-//                                    Log.d(TAG, "ECG streaming complete");
-//                                }
-//                            }
-//                    );
+//        @io.reactivex.rxjava3.annotations.NonNull SingleSource<?>
+//        availableSettings =
+//                mApi.requestStreamSettings(identifier, feature)
+//                .observeOn(AndroidSchedulers.mainThread());
+//        @io.reactivex.rxjava3.annotations.NonNull SingleSource<?>
+//        allSettings =
+//                mApi.requestFullStreamSettings(identifier, feature);
+//
+//        return new Single.just((availableSettings);
+//                {PolarSensorSetting available ->
+//        if (available.settings.isEmpty()) {
+//            throw Throwable("Settings are not available")
 //        } else {
-//            // NOTE stops streaming if it is "running"
-//            mPpgDisposable.dispose();
-//            mPpgDisposable = null;
+//            Log.d(TAG, "Feature " + feature + " available settings " +
+//            available.settings)
+//            Log.d(TAG, "Feature " + feature + " all settings " + all.settings)
+//            return@zip android.util.Pair(available, all)
 //        }
+//                }
+//        )
+//                .observeOn(AndroidSchedulers.mainThread())
+//                .toFlowable()
+//                .flatMap(
+//                        Function { sensorSettings: android.util
+//                        .Pair<PolarSensorSetting, PolarSensorSetting> ->
+//            DialogUtility.showAllSettingsDialog(
+//                    this@MainActivity,
+//            sensorSettings.first.settings,
+//                    sensorSettings.second.settings
+//                            ).toFlowable()
+//        } as Function<android.util.Pair<PolarSensorSetting,
+//        PolarSensorSetting>,
+//        Flowable<PolarSensorSetting>>
+//                )
 //    }
 
     @Override
@@ -1128,16 +1198,16 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 mName = s.name;
                 // Set the MRU preference here after we know the name
                 setDeviceMruPref(new DeviceInfo(mName, mDeviceId));
-                // Reset the plot
-                if (mName.contains("Sense")) {
-                    resetPlot(55);
-                } else if (mName.contains("OH1")) {
-                    // 135 Hz
-                    resetPlot(135);
-                } else {
-                    // 130 Hz
-                    resetPlot(130);
-                }
+//                // Reset the plot
+//                if (mName.contains("Sense")) {
+//                    resetPlot(55);
+//                } else if (mName.contains("OH1")) {
+//                    // 135 Hz
+//                    resetPlot(135);
+//                } else {
+//                    // 130 Hz
+//                    resetPlot(130);
+//                }
                 Toast.makeText(PPGActivity.this, R.string.connected,
                         Toast.LENGTH_SHORT).show();
             }
