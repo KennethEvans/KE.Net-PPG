@@ -229,6 +229,7 @@ public class Plotter implements IConstants {
         plotMin = mDataIndex - mDataSize;
         plotMax = mDataIndex;
         plot.setDomainBoundaries(plotMin, plotMax, BoundaryMode.FIXED);
+//        Log.d(TAG, "updatePlot: plotMin=" + plotMin + " plotMax=" + plotMax);
         mListener.update();
     }
 

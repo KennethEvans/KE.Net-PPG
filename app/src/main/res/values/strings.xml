@@ -26,6 +26,7 @@
     <string name="device_id_item">Set Device ID</string>
     <string name="info_string">%1$s\nBattery level: %2$s\nFirmware: %3$s\nID: %4$s\n</string>
     <string name="sampling_rate_string">Sampling rate reset from requested %1d to %2$d</string>
+    <string name="connected_string">Connected to %1$s</string>
 
     <!-- Utils -->
     <string name="ok">OK</string>

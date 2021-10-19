@@ -245,7 +245,6 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 mStopTime = new Date();
                 mPlaying = false;
                 allowPan(true);
-                renormalize();
                 if (mPpgDisposable != null) {
                     // Turns it off
                     streamPPG();
@@ -865,6 +864,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
      * the values.
      */
     public void renormalize() {
+        Log.d(TAG, "renormalize");
         LinkedList<Number> vals = mPlotter.getmSeries().getyVals();
         // Make a copy as vals will be cleared
         @SuppressWarnings("unchecked")
@@ -886,11 +886,29 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
             Utils.errMsg(this, "Error: Invalid scaling factor");
             return;
         }
+        Log.d(TAG, "    index=" + index + " nominal=" + nominal
+                + " min=" + absVals.get(0) + " max=" + absVals.get(nSamples - 1));
         mPlotter.getmSeries().clear();
+        Number oldVal;
+        double newVal;
+        double min = Double.MAX_VALUE, max = -Double.MAX_VALUE;
+        long startIndex = mPlotter.getmDataIndex() - nSamples;
+        // Scale so nominal is y =1 (2 blocks)
         for (int i = 0; i < nSamples; i++) {
-            Number val = oldVals.get(i);
-            mPlotter.getmSeries().addLast(i, 2. * val.doubleValue() / nominal);
+            oldVal = oldVals.get(i);
+            // Multiply this by the y value you want to correspond to nominal.
+            newVal = oldVal.doubleValue() / nominal;
+            if (newVal < min) min = newVal;
+            if (newVal > max) max = newVal;
+            mPlotter.getmSeries().addLast(startIndex + i, newVal);
+//            Log.d(TAG,"oldVal=" + oldVal + " newVal=" + newVal);
         }
+        Log.d(TAG, "    newMax=" + max + " newMin=" + min);
+        Log.d(TAG, "    nSamples=" + nSamples
+                + " startIndex=" + startIndex
+                + " endIndex=" + (startIndex + nSamples)
+                + " minX=" + mPlot.getBounds().getMinX()
+                + " maxX=" + mPlot.getBounds().getMaxX());
         update();
         Toast.makeText(PPGActivity.this,
                 "Plot renormalized",
@@ -1056,51 +1074,12 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         }
     }
 
-//    private Flowable<PolarSensorSetting> requestStreamSettings(
-//            String identifier, PolarBleApi.DeviceStreamingFeature feature) {
-//
-//        @io.reactivex.rxjava3.annotations.NonNull SingleSource<?>
-//        availableSettings =
-//                mApi.requestStreamSettings(identifier, feature)
-//                .observeOn(AndroidSchedulers.mainThread());
-//        @io.reactivex.rxjava3.annotations.NonNull SingleSource<?>
-//        allSettings =
-//                mApi.requestFullStreamSettings(identifier, feature);
-//
-//        return new Single.just((availableSettings);
-//                {PolarSensorSetting available ->
-//        if (available.settings.isEmpty()) {
-//            throw Throwable("Settings are not available")
-//        } else {
-//            Log.d(TAG, "Feature " + feature + " available settings " +
-//            available.settings)
-//            Log.d(TAG, "Feature " + feature + " all settings " + all.settings)
-//            return@zip android.util.Pair(available, all)
-//        }
-//                }
-//        )
-//                .observeOn(AndroidSchedulers.mainThread())
-//                .toFlowable()
-//                .flatMap(
-//                        Function { sensorSettings: android.util
-//                        .Pair<PolarSensorSetting, PolarSensorSetting> ->
-//            DialogUtility.showAllSettingsDialog(
-//                    this@MainActivity,
-//            sensorSettings.first.settings,
-//                    sensorSettings.second.settings
-//                            ).toFlowable()
-//        } as Function<android.util.Pair<PolarSensorSetting,
-//        PolarSensorSetting>,
-//        Flowable<PolarSensorSetting>>
-//                )
-//    }
-
     @Override
     public void update() {
         runOnUiThread(() -> {
-//                Log.d(TAG, "update (UI) thread: " + Thread.currentThread()
-//                .getName());
             mPlot.redraw();
+//            Log.d(TAG, "update: nSamples="
+//                    + mPlotter.getmSeries().getyVals().size());
         });
     }
 
@@ -1208,7 +1187,8 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
 //                    // 130 Hz
 //                    resetPlot(130);
 //                }
-                Toast.makeText(PPGActivity.this, R.string.connected,
+                Toast.makeText(PPGActivity.this,
+                        getString(R.string.connected_string, s.name),
                         Toast.LENGTH_SHORT).show();
             }
 
