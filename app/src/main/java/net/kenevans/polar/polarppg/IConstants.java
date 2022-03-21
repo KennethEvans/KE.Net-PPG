@@ -7,6 +7,6 @@ public interface IConstants {
     String PREF_MRU_DEVICE_IDS = "mruDeviceIds";
     String PREF_TREE_URI = "treeUri";
 
-    int REQ_ACCESS_LOCATION = 1;
+    int REQ_ACCESS_PERMISSIONS = 1;
     int REQ_GET_TREE = 10;
 }

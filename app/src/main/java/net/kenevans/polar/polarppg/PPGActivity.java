@@ -2,7 +2,9 @@ package net.kenevans.polar.polarppg;
 
 import android.Manifest;
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothManager;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -65,17 +67,19 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.content.ContextCompat;
 import androidx.core.content.res.ResourcesCompat;
 import io.reactivex.rxjava3.disposables.Disposable;
 import io.reactivex.rxjava3.functions.Consumer;
 import io.reactivex.rxjava3.functions.Function;
 
-public class PPGActivity extends AppCompatActivity implements net.kenevans.polar.polarppg.IConstants,
+public class PPGActivity extends AppCompatActivity
+        implements net.kenevans.polar.polarppg.IConstants,
         net.kenevans.polar.polarppg.PlotterListener {
     SharedPreferences mSharedPreferences;
     private static final double RENORMALIZE_FRACTION = .80;
@@ -95,6 +99,9 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
     private int mRequestedSamplingRate;
     private int mNPacket;
     private long mFirstTimestep;
+
+    private boolean mBleSupported;
+    private boolean mAllPermissionsAsked;
 
     // For debugging
     private double mTemp;
@@ -124,6 +131,73 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
 //    private long ppgTime0;
 //    private long redrawTime0;
 
+    private final ActivityResultLauncher<Intent> enableBluetoothLauncher =
+            registerForActivityResult(
+                    new ActivityResultContracts.StartActivityForResult(),
+                    result -> {
+                        Log.d(TAG, "enableBluetoothLauncher: result" +
+                                ".getResultCode()=" + result.getResultCode());
+                        if (result.getResultCode() != RESULT_OK) {
+                            Utils.warnMsg(this, "This app will not work with " +
+                                    "Bluetooth disabled");
+                        }
+                    });
+
+    // Launcher for PREF_TREE_URI
+    private final ActivityResultLauncher<Intent> openDocumentTreeLauncher =
+            registerForActivityResult(
+                    new ActivityResultContracts.StartActivityForResult(),
+                    result -> {
+                        Log.d(TAG, "openDocumentTreeLauncher: result" +
+                                ".getResultCode()=" + result.getResultCode());
+                        // Find the UID for this application
+                        Log.d(TAG, "URI=" + UriUtils.getApplicationUid(this));
+                        Log.d(TAG,
+                                "Current permissions (initial): "
+                                        + UriUtils.getNPersistedPermissions(this));
+                        try {
+                            if (result.getResultCode() == RESULT_OK) {
+                                // Get Uri from Storage Access Framework.
+                                Uri treeUri = result.getData().getData();
+                                SharedPreferences.Editor editor =
+                                        getPreferences(MODE_PRIVATE)
+                                                .edit();
+                                if (treeUri == null) {
+                                    editor.putString(PREF_TREE_URI, null);
+                                    editor.apply();
+                                    Utils.errMsg(this, "Failed to get " +
+                                            "persistent " +
+                                            "access permissions");
+                                    return;
+                                }
+                                // Persist access permissions.
+                                try {
+                                    this.getContentResolver().takePersistableUriPermission(treeUri,
+                                            Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                                                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                                    // Save the current treeUri as PREF_TREE_URI
+                                    editor.putString(PREF_TREE_URI,
+                                            treeUri.toString());
+                                    editor.apply();
+                                    // Trim the persisted permissions
+                                    UriUtils.trimPermissions(this, 1);
+                                } catch (Exception ex) {
+                                    String msg = "Failed to " +
+                                            "takePersistableUriPermission for "
+                                            + treeUri.getPath();
+                                    Utils.excMsg(this, msg, ex);
+                                }
+                                Log.d(TAG,
+                                        "Current permissions (final): "
+                                                + UriUtils.getNPersistedPermissions(this));
+                            }
+                        } catch (Exception ex) {
+                            Log.e(TAG, "Error in openDocumentTreeLauncher: " +
+                                    "startActivity for result", ex);
+                        }
+                    });
+
+
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         Log.d(TAG, this.getClass().getSimpleName() + " onCreate");
@@ -139,7 +213,6 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
 
 
         // Start Bluetooth
-        checkBT();
         mDeviceId = mSharedPreferences.getString(PREF_DEVICE_ID, "");
         Log.d(TAG, "    mDeviceId=" + mDeviceId);
         Gson gson = new Gson();
@@ -154,6 +227,22 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         if (mDeviceId == null || mDeviceId.equals("")) {
             selectDeviceId();
         }
+
+        // Use this check to determine whether BLE is supported on the device.
+        // Then you can selectively disable BLE-related features.
+        if (!getPackageManager().hasSystemFeature(
+                PackageManager.FEATURE_BLUETOOTH_LE)) {
+            String msg = getString(R.string.ble_not_supported);
+            Utils.warnMsg(this, msg);
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+            mBleSupported = false;
+            return;
+        } else {
+            mBleSupported = true;
+        }
+
+        // Ask for needed permissions
+        requestPermissions();
     }
 
     @Override
@@ -229,6 +318,14 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
             mMenu.findItem(R.id.save_plot).setVisible(true);
             mMenu.findItem(R.id.save_both).setVisible(true);
         }
+
+        // Capture global exceptions
+        Thread.setDefaultUncaughtExceptionHandler((paramThread,
+                                                   paramThrowable) -> {
+            Log.e(TAG, "Unexpected exception :", paramThrowable);
+            // Any non-zero exit code
+            System.exit(2);
+        });
         return true;
     }
 
@@ -307,38 +404,6 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         return false;
     }
 
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode,
-                                    Intent intent) {
-        super.onActivityResult(requestCode, resultCode, intent);
-        if (requestCode == REQ_GET_TREE && resultCode == RESULT_OK) {
-            Uri treeUri;
-            // Get Uri from Storage Access Framework.
-            treeUri = intent.getData();
-            // Keep them from accumulating
-            UriUtils.releaseAllPermissions(this);
-            SharedPreferences.Editor editor = getPreferences(MODE_PRIVATE)
-                    .edit();
-            if (treeUri != null) {
-                editor.putString(PREF_TREE_URI, treeUri.toString());
-            } else {
-                editor.putString(PREF_TREE_URI, null);
-            }
-            editor.apply();
-
-            // Persist access permissions.
-            final int takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION |
-                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
-            if (treeUri != null) {
-                this.getContentResolver().takePersistableUriPermission(treeUri,
-                        takeFlags);
-            } else {
-                Utils.errMsg(this, "Failed to get persistent access " +
-                        "permissions");
-            }
-        }
-    }
-
     /**
      * This is necessary to handle orientation changes and keep the plot. It
      * needs<br><br>
@@ -378,18 +443,62 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[]
             permissions, @NonNull int[] grantResults) {
+        Log.d(TAG, this.getClass().getSimpleName()
+                + "onRequestPermissionsResult");
         super.onRequestPermissionsResult(requestCode, permissions,
                 grantResults);
-        Log.d(TAG, this.getClass().getSimpleName() + ": " +
-                "onRequestPermissionsResult:" + " permissions=" +
-                permissions[0]);
-        Log.d(TAG, "    grantResults=" + grantResults[0]);
-        Log.d(TAG, "    requestCode=" + requestCode
-                + " ACCESS_LOCATION_REQ="
-                + REQ_ACCESS_LOCATION
-        );
-//        switch (requestCode) {
-//        }
+        if (requestCode == REQ_ACCESS_PERMISSIONS) {// All (Handle multiple)
+            for (int i = 0; i < permissions.length; i++) {
+                if (permissions[i].equals(Manifest.
+                        permission.ACCESS_COARSE_LOCATION)) {
+                    if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                        Log.d(TAG, "REQ_ACCESS_PERMISSIONS: COARSE_LOCATION " +
+                                "granted");
+                    } else if (grantResults[i] == PackageManager.PERMISSION_DENIED) {
+                        Log.d(TAG, "REQ_ACCESS_PERMISSIONS: COARSE_LOCATION " +
+                                "denied");
+                    }
+                } else if (permissions[i].equals(Manifest.
+                        permission.ACCESS_FINE_LOCATION)) {
+                    if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                        Log.d(TAG, "REQ_ACCESS_PERMISSIONS: FINE_LOCATION " +
+                                "granted");
+                    } else if (grantResults[i] == PackageManager.PERMISSION_DENIED) {
+                        Log.d(TAG, "REQ_ACCESS_PERMISSIONS: FINE_LOCATION " +
+                                "denied");
+                    }
+                } else if (permissions[i].equals(Manifest.
+                        permission.BLUETOOTH_SCAN)) {
+                    if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                        Log.d(TAG, "REQ_ACCESS_PERMISSIONS: BLUETOOTH_SCAN " +
+                                "granted");
+                    } else if (grantResults[i] == PackageManager.PERMISSION_DENIED) {
+                        Log.d(TAG, "REQ_ACCESS_PERMISSIONS: BLUETOOTH_SCAN " +
+                                "denied");
+                    }
+                } else if (permissions[i].equals(Manifest.
+                        permission.BLUETOOTH_CONNECT)) {
+                    if (grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                        Log.d(TAG, "REQ_ACCESS_PERMISSIONS: BLUETOOTH_CONNECT" +
+                                " " +
+                                "granted");
+                    } else if (grantResults[i] == PackageManager.PERMISSION_DENIED) {
+                        Log.d(TAG, "REQ_ACCESS_PERMISSIONS: BLUETOOTH_CONNECT" +
+                                " " +
+                                "denied");
+                    }
+                }
+            }
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        // This seems to be necessary with Android 12
+        // Otherwise onDestroy is not called
+        Log.d(TAG, this.getClass().getSimpleName() + ": onBackPressed");
+        finish();
+        super.onBackPressed();
     }
 
     public void selectDeviceId() {
@@ -599,9 +708,6 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 " heightPixels=" + displayMetrics.heightPixels);
 
         mPlot.addSeries(mPlotter.getmSeries(), mPlotter.getmFormatter());
-//        mPlot.addSeries(mPlotter.getmSeries1(), mPlotter.getmFormatter1());
-//        mPlot.addSeries(mPlotter.getmSeries2(), mPlotter.getmFormatter2());
-//        mPlot.addSeries(mPlotter.getmSeries3(), mPlotter.getmFormatter3());
         mPlot.setRangeBoundaries(-rMax, rMax, BoundaryMode.FIXED);
         // Set the range block to be .1 mV so a large block will be .5 mV
         mPlot.setRangeStep(StepMode.INCREMENT_BY_VAL, .1);
@@ -612,20 +718,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         mPlot.setDomainStep(StepMode.INCREMENT_BY_VAL,
                 .2 * mNLarge);
         mPlot.setLinesPerDomainLabel(5);
-
         mPlot.getGraph().setLineLabelEdges(XYGraphWidget.Edge.NONE);
-
-        // These don't work
-//        mPlot.getTitle().position(0, HorizontalPositioning
-//        .ABSOLUTE_FROM_RIGHT,
-//                0,    VerticalPositioning.ABSOLUTE_FROM_TOP, Anchor
-//                .RIGHT_TOP);
-//        mPlot.getTitle().setAnchor(Anchor.BOTTOM_MIDDLE);
-//        mPlot.getTitle().setMarginTop(200);
-//        mPlot.getTitle().setPaddingTop(200);
-
-//        mPlot.setRenderMode(Plot.RenderMode.USE_BACKGROUND_THREAD);
-
         update();
     }
 
@@ -844,10 +937,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         }
         msg.append("Polar BLE API Version: ").
                 append(PolarBleApiDefaultImpl.versionInfo()).append("\n");
-        msg.append("Location Permission: ")
-                .append((ContextCompat.checkSelfPermission(this, Manifest
-                        .permission.ACCESS_FINE_LOCATION) == PackageManager
-                        .PERMISSION_GRANTED)).append("\n");
+        msg.append(UriUtils.getRequestedPermissionsInfo(this));
         SharedPreferences prefs = getPreferences(MODE_PRIVATE);
         String treeUriStr = prefs.getString(PREF_TREE_URI, null);
         if (treeUriStr == null) {
@@ -1022,36 +1112,6 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                                             }
                                             return;
                                         }
-//                                        Log.d(TAG, "timestamp=" +
-//                                        polarOhrPPGData.timeStamp
-//                                        + " samples=" + polarOhrPPGData
-//                                        .samples.size());
-////                                        for (PolarOhrData.PolarOhrSample
-//                                        data : polarOhrPPGData.samples) {
-//                                            Log.d(TAG, ""
-//                                                    + " ppg0: " + data
-//                                                    .channelSamples.get(0)
-//                                                    + " ppg1: " + data
-//                                                    .channelSamples.get(1)
-//                                                    + " ppg2: " + data
-//                                                    .channelSamples.get(2)
-//                                                    + " ambient: " + data
-//                                                    .channelSamples.get(3));
-//                                        }
-//                                        // Check sampling rate
-//                                        if (mTemp != 0) {
-//                                            try {
-//                                                Log.d(TAG, "Hz="
-//                                                        + 1.e9 *
-//                                                        polarOhrPPGData
-//                                                        .samples.size()
-//                                                        / (polarOhrPPGData
-//                                                        .timeStamp - mTemp));
-//                                            } catch (Exception ex) {
-//                                                // Do nothing
-//                                            }
-//                                        }
-//                                        mTemp = polarOhrPPGData.timeStamp;
                                         if (mPlaying) {
                                             mPlotter.addValues(mPlot,
                                                     polarOhrPPGData);
@@ -1076,28 +1136,59 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
 
     @Override
     public void update() {
-        runOnUiThread(() -> {
-            mPlot.redraw();
-//            Log.d(TAG, "update: nSamples="
-//                    + mPlotter.getmSeries().getyVals().size());
-        });
+        runOnUiThread(() -> mPlot.redraw());
     }
 
-    public void checkBT() {
-        BluetoothAdapter mBluetoothAdapter =
-                BluetoothAdapter.getDefaultAdapter();
-        if (mBluetoothAdapter != null && !mBluetoothAdapter.isEnabled()) {
-            Intent enableBtIntent =
-                    new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
-            startActivityForResult(enableBtIntent, 2);
+    /**
+     * Determines if either COARSE or FINE location permission is granted.
+     *
+     * @return If granted.
+     */
+    @SuppressWarnings("BooleanMethodIsAlwaysInverted")
+    public static boolean isAllPermissionsGranted(Context ctx) {
+        boolean granted;
+        if (Build.VERSION.SDK_INT >= 31) {
+            // Android 12 (S)
+            granted = ctx.checkSelfPermission(
+                    Manifest.permission.BLUETOOTH_CONNECT) ==
+                    PackageManager.PERMISSION_GRANTED |
+                    ctx.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) ==
+                            PackageManager.PERMISSION_GRANTED;
+        } else {
+            // Android 6 (M)
+            granted = ctx.checkSelfPermission(
+                    Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                    PackageManager.PERMISSION_GRANTED |
+                    ctx.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+                            PackageManager.PERMISSION_GRANTED;
+        }
+        return granted;
+    }
+
+    public void requestPermissions() {
+        Log.d(TAG, "requestPermissions");
+        BluetoothManager bluetoothManager =
+                (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+        if (bluetoothManager != null) {
+            BluetoothAdapter mBluetoothAdapter = bluetoothManager.getAdapter();
+            if (mBluetoothAdapter != null && !mBluetoothAdapter.isEnabled()) {
+                Intent enableBtIntent =
+                        new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+                enableBluetoothLauncher.launch(enableBtIntent);
+            }
         }
 
-        //requestPermissions() method needs to be called when the build SDK
-        // version is 23 or above
-        if (Build.VERSION.SDK_INT >= 23) {
-            this.requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION,
+        if (Build.VERSION.SDK_INT >= 31) {
+            // Android 12 (S)
+            this.requestPermissions(new String[]{
+                            Manifest.permission.BLUETOOTH_SCAN,
+                            Manifest.permission.BLUETOOTH_CONNECT},
+                    REQ_ACCESS_PERMISSIONS);
+        } else {
+            // Android 6 (M)
+            this.requestPermissions(new String[]{
                             Manifest.permission.ACCESS_FINE_LOCATION},
-                    REQ_ACCESS_LOCATION);
+                    REQ_ACCESS_PERMISSIONS);
         }
     }
 
@@ -1108,8 +1199,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION &
                 Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-//        intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uriToLoad);
-        startActivityForResult(intent, REQ_GET_TREE);
+        openDocumentTreeLauncher.launch(intent);
     }
 
     public void restart() {
@@ -1159,6 +1249,16 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         };
         mPlot.addListener(mPlotListener);
 
+        // Don't use SDK if BT is not enabled or permissions are not granted.
+        if (!mBleSupported) return;
+        if (!isAllPermissionsGranted(this)) {
+            if (!mAllPermissionsAsked) {
+                mAllPermissionsAsked = true;
+                Utils.warnMsg(this, getString(R.string.permission_not_granted));
+            }
+            return;
+        }
+
         mApi = PolarBleApiDefaultImpl.defaultImplementation(this,
                 PolarBleApi.FEATURE_POLAR_SENSOR_STREAMING |
                         PolarBleApi.FEATURE_BATTERY_INFO |
@@ -1177,16 +1277,6 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
                 mName = s.name;
                 // Set the MRU preference here after we know the name
                 setDeviceMruPref(new DeviceInfo(mName, mDeviceId));
-//                // Reset the plot
-//                if (mName.contains("Sense")) {
-//                    resetPlot(55);
-//                } else if (mName.contains("OH1")) {
-//                    // 135 Hz
-//                    resetPlot(135);
-//                } else {
-//                    // 130 Hz
-//                    resetPlot(130);
-//                }
                 Toast.makeText(PPGActivity.this,
                         getString(R.string.connected_string, s.name),
                         Toast.LENGTH_SHORT).show();
@@ -1273,7 +1363,7 @@ public class PPGActivity extends AppCompatActivity implements net.kenevans.polar
         Log.d(TAG, "    restart(end) mApi=" + mApi + " mPlaying=" + mPlaying);
     }
 
-    public class DeviceInfo {
+    public static class DeviceInfo {
         public String name;
         public String id;
 
