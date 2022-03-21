@@ -202,6 +202,14 @@ public class PPGActivity extends AppCompatActivity
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         Log.d(TAG, this.getClass().getSimpleName() + " onCreate");
         super.onCreate(savedInstanceState);
+        // Capture global exceptions
+        Thread.setDefaultUncaughtExceptionHandler((paramThread,
+                                                   paramThrowable) -> {
+            Log.e(TAG, "Unexpected exception :", paramThrowable);
+            // Any non-zero exit code
+            System.exit(2);
+        });
+
         setContentView(R.layout.activity_ppg);
         mTextViewHR = findViewById(R.id.info);
         mTextViewFW = findViewById(R.id.fw);
@@ -318,14 +326,6 @@ public class PPGActivity extends AppCompatActivity
             mMenu.findItem(R.id.save_plot).setVisible(true);
             mMenu.findItem(R.id.save_both).setVisible(true);
         }
-
-        // Capture global exceptions
-        Thread.setDefaultUncaughtExceptionHandler((paramThread,
-                                                   paramThrowable) -> {
-            Log.e(TAG, "Unexpected exception :", paramThrowable);
-            // Any non-zero exit code
-            System.exit(2);
-        });
         return true;
     }
 
